@@ -4,8 +4,7 @@ export async function GET() {
   return ok({
     status: 'ok',
     service: 'leadradar2025e-web',
-    scope: 'global',
-    env: process.env.NODE_ENV,
+    scope: 'admin',
     timestamp: new Date().toISOString(),
   });
 }

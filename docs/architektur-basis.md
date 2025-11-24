@@ -34,3 +34,28 @@ leadradar2025e besteht aus mehreren Schichten:
   - `app/(admin)/page.tsx` → `/admin`
 - Erste API-Route:
   - `app/api/health/route.ts` → `/api/health`
+
+  ## API-Struktur (Stand Basis-Setup)
+
+- **Global**
+  - `GET /api/health`  
+    - Health-Check für den gesamten Service (wird von Web & Mobile genutzt)
+
+- **Admin**
+  - `GET /api/admin/health`  
+    - Health-Check speziell für Admin-Kontext (später z. B. Berechtigungen, Datenbank-Checks, etc.)
+
+- **Mobile**
+  - `GET /api/mobile/health`  
+    - Health-Check-Endpunkt für die Mobile-App
+
+- **Response-Format**
+
+  Alle API-Endpunkte nutzen gemeinsame Helfer in `lib/api/response.ts`:
+
+  ```json
+  {
+    "success": true,
+    "data": { ... }
+  }
+
