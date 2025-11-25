@@ -1,38 +1,24 @@
-import Link from 'next/link';
-import type { ReactNode } from 'react';
+// app/(admin)/layout.tsx
+import type { ReactNode } from "react";
+import { LogoutButton } from "@/components/admin/LogoutButton";
 
-export default function AdminLayout({ children }: { children: ReactNode }) {
+type AdminLayoutProps = {
+  children: ReactNode;
+};
+
+export default function AdminLayout({ children }: AdminLayoutProps) {
   return (
-    <div className="min-h-screen flex">
-      <aside className="w-64 border-r border-gray-200 p-6 space-y-4">
-        <h2 className="text-xl font-bold mb-4">LeadRadar Admin</h2>
-        <nav className="space-y-2 text-sm">
-          <div>
-            <div className="font-semibold text-gray-700 mb-1">Allgemein</div>
-            <ul className="space-y-1">
-              <li>
-                <Link href="/admin" className="hover:underline">
-                  Dashboard
-                </Link>
-              </li>
-            </ul>
+    <div className="min-h-screen bg-slate-50">
+      <header className="w-full border-b bg-white">
+        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+          <div className="text-sm font-semibold text-slate-800">
+            LeadRadar Admin
           </div>
+          <LogoutButton />
+        </div>
+      </header>
 
-          <div>
-            <div className="font-semibold text-gray-700 mb-1">Später</div>
-            <ul className="space-y-1">
-              <li className="text-gray-400">Messen / Events</li>
-              <li className="text-gray-400">Formulare</li>
-              <li className="text-gray-400">Leads</li>
-              <li className="text-gray-400">Lizenzen / Benutzer</li>
-            </ul>
-          </div>
-        </nav>
-      </aside>
-
-      <main className="flex-1 p-8 bg-gray-50">
-        {children}
-      </main>
+      <main className="mx-auto max-w-6xl w-full px-4 py-6">{children}</main>
     </div>
   );
 }
