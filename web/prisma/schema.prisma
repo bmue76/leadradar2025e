@@ -1,0 +1,52 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  role      String   @default("admin")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Event {
+  id          Int      @id @default(autoincrement())
+  name        String
+  startDate   DateTime
+  endDate     DateTime?
+  location    String?          // Messeort / Halle / Stand etc.
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Beziehungen
+  leads       Lead[]
+}
+
+model Lead {
+  id        Int      @id @default(autoincrement())
+  eventId   Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Basis-Lead-Felder (können wir später noch ausbauen)
+  firstName String?
+  lastName  String?
+  email     String?
+  phone     String?
+  company   String?
+  notes     String?
+
+  // Beziehung zurück zum Event
+  event     Event    @relation(fields: [eventId], references: [id])
+}
+
