@@ -40,4 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-/lib/generated/prisma
+# prisma (SQLite Dev-DB, Journals – Migrationen bleiben im Repo)
+prisma/dev.db
+prisma/*.db-journal
