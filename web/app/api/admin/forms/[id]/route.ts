@@ -2,151 +2,168 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
-function parseFormIdFromUrl(request: NextRequest): number | null {
-  const url = new URL(request.url);
-  const match = url.pathname.match(/\/api\/admin\/forms\/(\d+)/);
-  if (!match) return null;
-  const id = Number(match[1]);
-  if (!Number.isFinite(id) || id <= 0) return null;
-  return id;
-}
+/**
+ * GET /api/admin/forms/[id]
+ * Lädt ein Formular inkl. Felder.
+ */
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const formId = Number.parseInt(id, 10);
 
-// GET /api/admin/forms/:id
-export async function GET(request: NextRequest) {
-  const formId = parseFormIdFromUrl(request);
-  if (!formId) {
-    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
+  if (Number.isNaN(formId)) {
+    return NextResponse.json(
+      { error: 'Ungültige Formular-ID' },
+      { status: 400 },
+    );
   }
 
   try {
     const form = await prisma.form.findUnique({
       where: { id: formId },
+      include: {
+        fields: {
+          orderBy: { order: 'asc' },
+        },
+      },
     });
 
     if (!form) {
-      return NextResponse.json({ error: 'Form not found' }, { status: 404 });
-    }
-
-    return NextResponse.json(form, { status: 200 });
-  } catch (err) {
-    console.error('Error in GET /api/admin/forms/[id]:', err);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
-
-// PATCH /api/admin/forms/:id
-export async function PATCH(request: NextRequest) {
-  const formId = parseFormIdFromUrl(request);
-  if (!formId) {
-    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
-  }
-
-  let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
-  }
-
-  const { name, description, status, isDefault } = body ?? {};
-
-  if (typeof name !== 'string' || !name.trim()) {
-    return NextResponse.json(
-      { error: 'Name is required and must be a non-empty string' },
-      { status: 400 },
-    );
-  }
-
-  if (status && !['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(status)) {
-    return NextResponse.json(
-      { error: 'Invalid status value' },
-      { status: 400 },
-    );
-  }
-
-  if (isDefault != null && typeof isDefault !== 'boolean') {
-    return NextResponse.json(
-      { error: 'isDefault must be a boolean if provided' },
-      { status: 400 },
-    );
-  }
-
-  try {
-    // Erst Formular holen, um eventId zu kennen
-    const existing = await prisma.form.findUnique({
-      where: { id: formId },
-    });
-
-    if (!existing) {
-      return NextResponse.json({ error: 'Form not found' }, { status: 404 });
-    }
-
-    const dataToUpdate: any = {
-      name: name.trim(),
-      description: description ?? null,
-      status: status ?? existing.status,
-      isDefault: isDefault ?? existing.isDefault,
-    };
-
-    const updated = await prisma.$transaction(async (tx) => {
-      // Falls dieses Formular als Standard markiert wird:
-      if (isDefault === true && existing.eventId != null) {
-        // alle anderen Formulare des Events auf false
-        await tx.form.updateMany({
-          where: {
-            eventId: existing.eventId,
-            NOT: { id: formId },
-          },
-          data: { isDefault: false },
-        });
-      }
-
-      return tx.form.update({
-        where: { id: formId },
-        data: dataToUpdate,
-      });
-    });
-
-    return NextResponse.json(updated, { status: 200 });
-  } catch (err) {
-    console.error('Error in PATCH /api/admin/forms/[id]:', err);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
-
-// DELETE /api/admin/forms/:id
-export async function DELETE(request: NextRequest) {
-  const formId = parseFormIdFromUrl(request);
-  if (!formId) {
-    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
-  }
-
-  try {
-    // Optional: hier könnte man prüfen, ob noch Leads existieren und ggf. ein 409 zurückgeben.
-    await prisma.form.delete({
-      where: { id: formId },
-    });
-
-    return NextResponse.json({ success: true }, { status: 200 });
-  } catch (err: any) {
-    console.error('Error in DELETE /api/admin/forms/[id]:', err);
-
-    // Wenn Prisma z.B. wegen FK-Constraint scheitert, geben wir 409 aus
-    if (err?.code === 'P2003') {
       return NextResponse.json(
-        { error: 'Form cannot be deleted because related records exist' },
-        { status: 409 },
+        { error: 'Formular nicht gefunden' },
+        { status: 404 },
       );
     }
 
+    return NextResponse.json({
+      form,
+      fields: form.fields,
+    });
+  } catch (error) {
+    console.error('Fehler beim Laden des Formulars', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Fehler beim Laden des Formulars' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PATCH /api/admin/forms/[id]
+ * Aktualisiert Basis-Infos & Branding-Felder eines Formulars.
+ */
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const formId = Number.parseInt(id, 10);
+
+  if (Number.isNaN(formId)) {
+    return NextResponse.json(
+      { error: 'Ungültige Formular-ID' },
+      { status: 400 },
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: 'Ungültiger JSON-Body' },
+      { status: 400 },
+    );
+  }
+
+  if (typeof body !== 'object' || body === null) {
+    return NextResponse.json(
+      { error: 'Body muss ein Objekt sein' },
+      { status: 400 },
+    );
+  }
+
+  const payload = body as {
+    name?: string;
+    description?: string | null;
+    displayTitle?: string | null;
+    displaySubtitle?: string | null;
+    logoUrl?: string | null;
+    primaryColor?: string | null;
+    accentColor?: string | null;
+  };
+
+  // simples Datenobjekt – Prisma akzeptiert das problemlos
+  const data: Record<string, string | null> = {};
+
+  if (typeof payload.name === 'string') {
+    data.name = payload.name.trim();
+  }
+  if (payload.description !== undefined) {
+    data.description =
+      typeof payload.description === 'string'
+        ? payload.description.trim()
+        : null;
+  }
+  if (payload.displayTitle !== undefined) {
+    data.displayTitle =
+      typeof payload.displayTitle === 'string'
+        ? payload.displayTitle.trim()
+        : null;
+  }
+  if (payload.displaySubtitle !== undefined) {
+    data.displaySubtitle =
+      typeof payload.displaySubtitle === 'string'
+        ? payload.displaySubtitle.trim()
+        : null;
+  }
+  if (payload.logoUrl !== undefined) {
+    data.logoUrl =
+      typeof payload.logoUrl === 'string'
+        ? payload.logoUrl.trim()
+        : null;
+  }
+  if (payload.primaryColor !== undefined) {
+    data.primaryColor =
+      typeof payload.primaryColor === 'string'
+        ? payload.primaryColor.trim()
+        : null;
+  }
+  if (payload.accentColor !== undefined) {
+    data.accentColor =
+      typeof payload.accentColor === 'string'
+        ? payload.accentColor.trim()
+        : null;
+  }
+
+  if (Object.keys(data).length === 0) {
+    return NextResponse.json(
+      { error: 'Keine gültigen Felder zum Aktualisieren übergeben' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const updated = await prisma.form.update({
+      where: { id: formId },
+      data,
+      include: {
+        fields: {
+          orderBy: { order: 'asc' },
+        },
+      },
+    });
+
+    return NextResponse.json({
+      form: updated,
+      fields: updated.fields,
+    });
+  } catch (error) {
+    console.error('Fehler beim Aktualisieren des Formulars', error);
+    return NextResponse.json(
+      { error: 'Fehler beim Aktualisieren des Formulars' },
       { status: 500 },
     );
   }

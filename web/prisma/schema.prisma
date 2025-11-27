@@ -73,14 +73,27 @@ model Form {
   id          Int         @id @default(autoincrement())
 
   // Zu welchem Event gehört dieses Formular?
-  eventId     Int
-  event       Event       @relation(fields: [eventId], references: [id])
+  // Für Vorlagen ist eventId = null
+  eventId     Int?
+  event       Event?      @relation(fields: [eventId], references: [id])
 
   name        String
   description String?
 
   status      FormStatus  @default(DRAFT)
   isDefault   Boolean     @default(false)
+
+  // Kennzeichnung als systemweite Formular-Vorlage
+  // Vorlagen: isTemplate = true, eventId = null
+  // Event-Formulare: isTemplate = false, eventId != null
+  isTemplate  Boolean     @default(false)
+
+  // Branding / CI-Einstellungen für Runtime & Preview
+  displayTitle    String?
+  displaySubtitle String?
+  logoUrl         String?
+  primaryColor    String?  // z.B. "#1E40AF"
+  accentColor     String?  // z.B. "#F97316"
 
   // Komplettes Formbuilder-JSON (Felder, Layout, Styling etc.)
   definition  Json?

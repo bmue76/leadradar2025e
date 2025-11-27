@@ -1,332 +1,161 @@
 // web/app/(admin)/admin/forms/[id]/preview/page.tsx
 'use client';
 
-import React, { use, useEffect, useState } from 'react';
-import { FormRuntime } from '@/app/components/forms/FormRuntime';
+import { useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import {
+  FormRuntime,
+  RuntimeForm,
+  RuntimeField,
+} from '@/components/FormRuntime';
 
-type FormStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
-
-type FormItem = {
-  id: number;
-  eventId: number | null;
-  name: string;
-  description: string | null;
-  status: FormStatus;
+type AdminFormResponse = {
+  form: RuntimeForm;
+  fields: RuntimeField[];
 };
 
-// Feldtypen – analog zu FormRuntime
-type FieldType =
-  | 'TEXT'
-  | 'TEXTAREA'
-  | 'SINGLE_SELECT'
-  | 'MULTI_SELECT'
-  | 'NUMBER'
-  | 'EMAIL'
-  | 'PHONE'
-  | 'DATE'
-  | 'DATETIME'
-  | 'BOOLEAN';
+export default function FormPreviewPage() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
 
-type FormFieldItem = {
-  id: number;
-  formId: number;
-  key: string;
-  label: string;
-  type: FieldType;
-  isRequired: boolean;
-  isReadOnly: boolean;
-  isOcrField: boolean;
-  order: number;
-  placeholder: string | null;
-  helpText: string | null;
-  defaultValue: string | null;
-  options: string[] | null; // DB-seitig aktuell string[]
-  config: any | null;
-};
+  const formId = Number.parseInt(params.id, 10);
 
-type PageProps = {
-  // Next 15/16: params ist ein Promise
-  params: Promise<{ id: string }>;
-};
+  const [form, setForm] = useState<RuntimeForm | null>(null);
+  const [fields, setFields] = useState<RuntimeField[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-export default function FormPreviewPage({ params }: PageProps) {
-  const resolvedParams = use(params);
-  const formId = Number.parseInt(resolvedParams.id, 10);
+  const goBack = () => {
+    if (form?.eventId) {
+      router.push(`/admin/events/${form.eventId}/forms`);
+    } else {
+      router.push('/admin/events');
+    }
+  };
 
-  const [form, setForm] = useState<FormItem | null>(null);
-  const [fields, setFields] = useState<FormFieldItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Formular + Felder laden
   useEffect(() => {
-    if (!Number.isFinite(formId) || formId <= 0) {
-      setLoadError('Ungültige Formular-ID');
+    if (Number.isNaN(formId)) {
+      setError('Ungültige Formular-ID');
+      setLoading(false);
       return;
     }
 
-    let cancelled = false;
-
-    async function load() {
+    const load = async () => {
+      setLoading(true);
+      setError(null);
       try {
-        setIsLoading(true);
-        setLoadError(null);
+        const res = await fetch(`/api/admin/forms/${formId}`);
+        const data = (await res.json().catch(() => null)) as
+          | AdminFormResponse
+          | { error?: string }
+          | null;
 
-        // Formular laden
-        const formRes = await fetch(`/api/admin/forms/${formId}`);
-        if (!formRes.ok) {
-          throw new Error(`Formular konnte nicht geladen werden (Status ${formRes.status})`);
-        }
-        const formData = await formRes.json();
-        if (!cancelled) {
-          setForm(formData as FormItem);
+        if (!res.ok) {
+          throw new Error(
+            (data as { error?: string })?.error ??
+              `Formular konnte nicht geladen werden (Status ${res.status})`,
+          );
         }
 
-        // Felder laden
-        const fieldsRes = await fetch(`/api/admin/forms/${formId}/fields`);
-        if (!fieldsRes.ok) {
-          throw new Error(`Felder konnten nicht geladen werden (Status ${fieldsRes.status})`);
+        if (!data || !('form' in data) || !('fields' in data)) {
+          throw new Error('Unerwartete Antwort vom Server');
         }
-        const fieldsData = await fieldsRes.json();
-        if (!cancelled) {
-          const list: FormFieldItem[] = Array.isArray(fieldsData)
-            ? fieldsData
-            : Array.isArray((fieldsData as any).fields)
-            ? (fieldsData as any).fields
-            : [];
-          setFields(list);
-        }
-      } catch (err: any) {
-        console.error('Error loading form/fields', err);
-        if (!cancelled) {
-          setLoadError(err?.message ?? 'Unbekannter Fehler beim Laden');
-        }
+
+        setForm((data as AdminFormResponse).form);
+        setFields((data as AdminFormResponse).fields);
+      } catch (err) {
+        console.error(err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Unbekannter Fehler beim Laden des Formulars',
+        );
       } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
+        setLoading(false);
       }
-    }
-
-    load();
-
-    return () => {
-      cancelled = true;
     };
+
+    void load();
   }, [formId]);
 
-  async function handleSubmit(values: Record<string, unknown>) {
-    setSubmitError(null);
-    setSubmitSuccess(null);
-    setFieldErrors({});
+  if (loading) {
+    return (
+      <div className="p-6">
+        <button
+          type="button"
+          onClick={goBack}
+          className="mb-4 px-3 py-1 rounded border border-gray-300 text-sm"
+        >
+          ← Zurück
+        </button>
+        <p>Formular-Vorschau wird geladen…</p>
+      </div>
+    );
+  }
 
-    if (!Number.isFinite(formId) || formId <= 0) {
-      setSubmitError('Ungültige Formular-ID');
-      return;
-    }
+  if (error) {
+    return (
+      <div className="p-6 space-y-4">
+        <button
+          type="button"
+          onClick={goBack}
+          className="px-3 py-1 rounded border border-gray-300 text-sm"
+        >
+          ← Zurück
+        </button>
+        <p className="text-red-600">{error}</p>
+      </div>
+    );
+  }
 
-    try {
-      setIsSubmitting(true);
-
-      const res = await fetch(`/api/forms/${formId}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ values }),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        // Feld-Validierungsfehler vom Server
-        if (res.status === 400 && data && typeof data === 'object') {
-          if (
-            (data as any).error === 'Validation failed' &&
-            (data as any).details &&
-            typeof (data as any).details === 'object'
-          ) {
-            setFieldErrors((data as any).details as Record<string, string>);
-            setSubmitError('Validierung fehlgeschlagen. Bitte Eingaben prüfen.');
-            return;
-          }
-
-          if (typeof (data as any).error === 'string') {
-            setSubmitError((data as any).error);
-            return;
-          }
-        }
-
-        const msg =
-          (data && typeof data === 'object' && typeof (data as any).error === 'string'
-            ? (data as any).error
-            : null) ?? `Lead konnte nicht gespeichert werden (Status ${res.status})`;
-        setSubmitError(msg);
-        return;
-      }
-
-      // Erfolg
-      const leadId = (data as any)?.leadId;
-      setSubmitSuccess(
-        leadId ? `Lead gespeichert (Test) – ID: ${leadId}` : 'Lead gespeichert (Test).'
-      );
-      console.log('Lead API response', data);
-    } catch (err: any) {
-      console.error('Error submitting lead preview', err);
-      setSubmitError(err?.message ?? 'Unbekannter Fehler beim Speichern');
-    } finally {
-      setIsSubmitting(false);
-    }
+  if (!form) {
+    return (
+      <div className="p-6 space-y-4">
+        <button
+          type="button"
+          onClick={goBack}
+          className="px-3 py-1 rounded border border-gray-300 text-sm"
+        >
+          ← Zurück
+        </button>
+        <p>Formular nicht gefunden.</p>
+      </div>
+    );
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '1.5rem' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 600, marginBottom: '0.25rem' }}>
-            Formular-Vorschau
-          </h1>
-          <p style={{ color: '#555' }}>
-            Formular-ID:{' '}
-            {Number.isFinite(formId) && formId > 0 ? (
-              <strong>{formId}</strong>
-            ) : (
-              <span style={{ color: '#d32f2f' }}>Ungültig</span>
-            )}
-            {form && (
-              <>
-                {' · '}
-                <strong>{form.name}</strong>
-              </>
-            )}
-          </p>
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-5xl mx-auto p-6 space-y-6">
+        <div className="flex items-center justify-between gap-4">
+          <button
+            type="button"
+            onClick={goBack}
+            className="px-3 py-1 rounded border border-gray-300 text-sm"
+          >
+            ← Zurück zur Formularliste
+          </button>
+
+          <div className="text-xs text-gray-500 text-right">
+            <div>Formular-ID: {form.id}</div>
+            <div>Status: {form.status}</div>
+            <div>
+              Typ: {form.isTemplate ? 'Vorlage (Template)' : 'Event-Formular'}
+            </div>
+          </div>
         </div>
 
-        <nav style={{ alignSelf: 'center', fontSize: '0.9rem' }}>
-          <a href={`/admin/forms/${formId}/fields`} style={{ marginRight: '1rem', color: '#1976d2' }}>
-            ← Zurück zu Feldern
-          </a>
-          <a href="/admin" style={{ color: '#1976d2' }}>
-            Admin-Übersicht
-          </a>
-        </nav>
-      </header>
+        <h1 className="text-xl font-semibold">
+          Formular-Vorschau mit Branding
+        </h1>
+        <p className="text-sm text-gray-600">
+          Dies ist eine interaktive Vorschau. Eingaben werden{' '}
+          <span className="font-semibold">nicht</span> gespeichert.
+        </p>
 
-      {isLoading && <p>Lade Formular und Felder …</p>}
-
-      {loadError && (
-        <div
-          style={{
-            background: '#ffebee',
-            border: '1px solid #ffcdd2',
-            color: '#c62828',
-            padding: '0.75rem 1rem',
-            borderRadius: 6,
-            marginBottom: '1rem',
-          }}
-        >
-          {loadError}
+        <div className="mt-4 rounded-lg border border-gray-200 bg-white p-6">
+          <FormRuntime form={form} fields={fields} mode="preview" />
         </div>
-      )}
-
-      {!isLoading && !loadError && fields.length === 0 && (
-        <div
-          style={{
-            background: '#fff3e0',
-            border: '1px solid #ffe0b2',
-            color: '#e65100',
-            padding: '0.75rem 1rem',
-            borderRadius: 6,
-            marginBottom: '1rem',
-          }}
-        >
-          Für dieses Formular sind noch keine Felder definiert.
-        </div>
-      )}
-
-      {submitError && (
-        <div
-          style={{
-            background: '#ffebee',
-            border: '1px solid #ffcdd2',
-            color: '#c62828',
-            padding: '0.7rem 1rem',
-            borderRadius: 6,
-            marginBottom: '0.75rem',
-          }}
-        >
-          {submitError}
-        </div>
-      )}
-
-      {submitSuccess && (
-        <div
-          style={{
-            background: '#e8f5e9',
-            border: '1px solid #c8e6c9',
-            color: '#2e7d32',
-            padding: '0.7rem 1rem',
-            borderRadius: 6,
-            marginBottom: '0.75rem',
-          }}
-        >
-          {submitSuccess}
-        </div>
-      )}
-
-      {Object.keys(fieldErrors).length > 0 && (
-        <div
-          style={{
-            background: '#fff3e0',
-            border: '1px solid #ffe0b2',
-            color: '#e65100',
-            padding: '0.7rem 1rem',
-            borderRadius: 6,
-            marginBottom: '0.75rem',
-            fontSize: '0.9rem',
-          }}
-        >
-          <strong>Feldfehler (Server):</strong>
-          <ul style={{ marginTop: '0.4rem', paddingLeft: '1.2rem' }}>
-            {Object.entries(fieldErrors).map(([key, msg]) => (
-              <li key={key}>
-                <code>{key}</code>: {msg}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {fields.length > 0 && (
-        <section
-          style={{
-            borderRadius: 12,
-            border: '1px solid #ddd',
-            padding: '1.25rem 1.5rem',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.03)',
-          }}
-        >
-          <h2 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.75rem' }}>
-            Live-Formular (Test-Submit)
-          </h2>
-
-          <p style={{ fontSize: '0.9rem', color: '#555', marginBottom: '0.75rem' }}>
-            Diese Vorschau verwendet die gleiche Runtime wie später in der App. Beim Absenden wird
-            ein Lead über die Lead-API gespeichert.
-          </p>
-
-          {/* Cast, damit TS mit dem options-Typ zufrieden ist */}
-          <FormRuntime
-            fields={fields as any}
-            onSubmit={handleSubmit}
-          />
-        </section>
-      )}
+      </div>
     </div>
   );
 }
