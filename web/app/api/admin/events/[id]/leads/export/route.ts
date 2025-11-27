@@ -1,8 +1,8 @@
-// web/app/api/admin/forms/[id]/leads/export/route.ts
+// web/app/api/admin/events/[id]/leads/export/route.ts
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
-const CSV_DELIMITER = ';';
+const CSV_DELIMITER = ';'; // Ggf. an deinen bestehenden CSV-Export anpassen
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -11,6 +11,7 @@ type RouteContext = {
 function parseDateParam(value: string | null): Date | null {
   if (!value) return null;
 
+  // Erlaube sowohl reine Daten (YYYY-MM-DD) als auch komplette ISO-Strings
   const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
   const isoString = isDateOnly ? `${value}T00:00:00.000Z` : value;
 
@@ -21,10 +22,13 @@ function parseDateParam(value: string | null): Date | null {
 function escapeCsvCell(value: unknown): string {
   if (value === null || value === undefined) return '""';
   const str = String(value);
+
+  // Doppelte Anführungszeichen escapen
   const escaped = str.replace(/"/g, '""');
   return `"${escaped}"`;
 }
 
+// Typ entsprechend deiner Lead-Spalten
 type LeadForExport = {
   id: number;
   eventId: number;
@@ -40,15 +44,14 @@ type LeadForExport = {
 
 function buildCsv(
   event: { id: number; name: string },
-  form: { id: number; name: string | null },
   leads: LeadForExport[]
 ): string {
+  // Feste Header (kannst du nach Bedarf erweitern)
   const headers = [
     'eventId',
     'eventName',
-    'formId',
-    'formName',
     'leadId',
+    'formId',
     'leadCreatedAt',
     'email',
     'firstName',
@@ -59,15 +62,15 @@ function buildCsv(
   ];
 
   const headerRow = headers.map(escapeCsvCell).join(CSV_DELIMITER);
+
   const rows: string[] = [headerRow];
 
   for (const lead of leads) {
     const rowCells = [
       escapeCsvCell(event.id),
       escapeCsvCell(event.name),
-      escapeCsvCell(form.id),
-      escapeCsvCell(form.name ?? ''),
       escapeCsvCell(lead.id),
+      escapeCsvCell(lead.formId ?? ''),
       escapeCsvCell(lead.createdAt.toISOString()),
       escapeCsvCell(lead.email ?? ''),
       escapeCsvCell(lead.firstName ?? ''),
@@ -89,11 +92,11 @@ export async function GET(
 ): Promise<Response> {
   try {
     const { id } = await context.params;
-    const formId = Number.parseInt(id, 10);
+    const eventId = Number.parseInt(id, 10);
 
-    if (!Number.isFinite(formId)) {
+    if (!Number.isFinite(eventId)) {
       return new Response(
-        JSON.stringify({ error: 'Ungültige Formular-ID' }),
+        JSON.stringify({ error: 'Ungültige Event-ID' }),
         {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
@@ -144,46 +147,24 @@ export async function GET(
       toDate = toDateRaw;
     }
 
-    // Formular inkl. Event laden (Name, Validation)
-    const form = await prisma.form.findUnique({
-      where: { id: formId },
+    // Event holen (für Name und Validation)
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
       select: {
         id: true,
         name: true,
-        eventId: true,
-        event: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
       },
     });
 
-    if (!form) {
+    if (!event) {
       return new Response(
-        JSON.stringify({ error: 'Formular nicht gefunden' }),
+        JSON.stringify({ error: 'Event nicht gefunden' }),
         {
           status: 404,
           headers: { 'Content-Type': 'application/json' },
         }
       );
     }
-
-    if (!form.event) {
-      return new Response(
-        JSON.stringify({
-          error:
-            'Dieses Formular ist keinem Event zugeordnet – Export auf Event-Basis nicht möglich.',
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    const event = form.event;
 
     // createdAt-Filter aufbauen
     let createdAtFilter: { gte?: Date; lte?: Date } | undefined;
@@ -193,9 +174,10 @@ export async function GET(
       if (toDate) createdAtFilter.lte = toDate;
     }
 
+    // Alle Leads dieses Events laden
     const leads = await prisma.lead.findMany({
       where: {
-        formId: formId,
+        eventId: eventId,
         ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
       },
       orderBy: {
@@ -215,11 +197,11 @@ export async function GET(
       },
     });
 
-    const csv = buildCsv(event, form, leads as LeadForExport[]);
+    const csv = buildCsv(event, leads as LeadForExport[]);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-    const filenameParts = [`form-${formId}-leads`];
+    const filenameParts = [`event-${eventId}-leads`];
     if (fromParam) filenameParts.push(`from_${fromParam}`);
     if (toParam) filenameParts.push(`to_${toParam}`);
     filenameParts.push(timestamp);
@@ -234,11 +216,9 @@ export async function GET(
       },
     });
   } catch (err) {
-    console.error('Error while exporting form leads CSV', err);
+    console.error('Error while exporting event leads CSV', err);
     return new Response(
-      JSON.stringify({
-        error: 'Interner Serverfehler beim CSV-Export (Formular)',
-      }),
+      JSON.stringify({ error: 'Interner Serverfehler beim CSV-Export' }),
       {
         status: 500,
         headers: { 'Content-Type': 'application/json' },

@@ -1,12 +1,8 @@
-// web/app/api/admin/forms/[id]/leads/export/route.ts
+// web/app/api/admin/leads/export/route.ts
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
 const CSV_DELIMITER = ';';
-
-type RouteContext = {
-  params: Promise<{ id: string }>;
-};
 
 function parseDateParam(value: string | null): Date | null {
   if (!value) return null;
@@ -38,73 +34,13 @@ type LeadForExport = {
   createdAt: Date;
 };
 
-function buildCsv(
-  event: { id: number; name: string },
-  form: { id: number; name: string | null },
-  leads: LeadForExport[]
-): string {
-  const headers = [
-    'eventId',
-    'eventName',
-    'formId',
-    'formName',
-    'leadId',
-    'leadCreatedAt',
-    'email',
-    'firstName',
-    'lastName',
-    'phone',
-    'company',
-    'notes',
-  ];
-
-  const headerRow = headers.map(escapeCsvCell).join(CSV_DELIMITER);
-  const rows: string[] = [headerRow];
-
-  for (const lead of leads) {
-    const rowCells = [
-      escapeCsvCell(event.id),
-      escapeCsvCell(event.name),
-      escapeCsvCell(form.id),
-      escapeCsvCell(form.name ?? ''),
-      escapeCsvCell(lead.id),
-      escapeCsvCell(lead.createdAt.toISOString()),
-      escapeCsvCell(lead.email ?? ''),
-      escapeCsvCell(lead.firstName ?? ''),
-      escapeCsvCell(lead.lastName ?? ''),
-      escapeCsvCell(lead.phone ?? ''),
-      escapeCsvCell(lead.company ?? ''),
-      escapeCsvCell(lead.notes ?? ''),
-    ];
-
-    rows.push(rowCells.join(CSV_DELIMITER));
-  }
-
-  return rows.join('\r\n');
-}
-
-export async function GET(
-  request: NextRequest,
-  context: RouteContext
-): Promise<Response> {
+export async function GET(request: NextRequest): Promise<Response> {
   try {
-    const { id } = await context.params;
-    const formId = Number.parseInt(id, 10);
-
-    if (!Number.isFinite(formId)) {
-      return new Response(
-        JSON.stringify({ error: 'Ungültige Formular-ID' }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const format = searchParams.get('format') ?? 'csv';
     const fromParam = searchParams.get('from');
     const toParam = searchParams.get('to');
+    const eventIdParam = searchParams.get('eventId');
 
     if (format !== 'csv') {
       return new Response(
@@ -144,46 +80,20 @@ export async function GET(
       toDate = toDateRaw;
     }
 
-    // Formular inkl. Event laden (Name, Validation)
-    const form = await prisma.form.findUnique({
-      where: { id: formId },
-      select: {
-        id: true,
-        name: true,
-        eventId: true,
-        event: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
-
-    if (!form) {
-      return new Response(
-        JSON.stringify({ error: 'Formular nicht gefunden' }),
-        {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
+    let eventIdFilter: number | undefined;
+    if (eventIdParam) {
+      const parsed = Number.parseInt(eventIdParam, 10);
+      if (!Number.isFinite(parsed)) {
+        return new Response(
+          JSON.stringify({ error: 'Ungültige eventId' }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+      eventIdFilter = parsed;
     }
-
-    if (!form.event) {
-      return new Response(
-        JSON.stringify({
-          error:
-            'Dieses Formular ist keinem Event zugeordnet – Export auf Event-Basis nicht möglich.',
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    const event = form.event;
 
     // createdAt-Filter aufbauen
     let createdAtFilter: { gte?: Date; lte?: Date } | undefined;
@@ -193,9 +103,10 @@ export async function GET(
       if (toDate) createdAtFilter.lte = toDate;
     }
 
+    // Leads holen
     const leads = await prisma.lead.findMany({
       where: {
-        formId: formId,
+        ...(eventIdFilter ? { eventId: eventIdFilter } : {}),
         ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
       },
       orderBy: {
@@ -215,11 +126,92 @@ export async function GET(
       },
     });
 
-    const csv = buildCsv(event, form, leads as LeadForExport[]);
+    // Event- und Form-Namen nachladen
+    const eventIds = Array.from(
+      new Set(leads.map((l) => l.eventId).filter((id) => id != null))
+    ) as number[];
+
+    const formIds = Array.from(
+      new Set(
+        leads
+          .map((l) => l.formId)
+          .filter((id): id is number => id !== null && id !== undefined)
+      )
+    );
+
+    const [events, forms] = await Promise.all([
+      eventIds.length
+        ? prisma.event.findMany({
+            where: { id: { in: eventIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      formIds.length
+        ? prisma.form.findMany({
+            where: { id: { in: formIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const eventMap = new Map<number, string>();
+    for (const e of events) {
+      eventMap.set(e.id, e.name);
+    }
+
+    const formMap = new Map<number, string | null>();
+    for (const f of forms) {
+      formMap.set(f.id, f.name);
+    }
+
+    // CSV bauen
+    const headers = [
+      'eventId',
+      'eventName',
+      'formId',
+      'formName',
+      'leadId',
+      'leadCreatedAt',
+      'email',
+      'firstName',
+      'lastName',
+      'phone',
+      'company',
+      'notes',
+    ];
+
+    const headerRow = headers.map(escapeCsvCell).join(CSV_DELIMITER);
+    const rows: string[] = [headerRow];
+
+    for (const lead of leads as LeadForExport[]) {
+      const eventName = eventMap.get(lead.eventId) ?? '';
+      const formName =
+        (lead.formId != null ? formMap.get(lead.formId) : null) ?? '';
+
+      const rowCells = [
+        escapeCsvCell(lead.eventId),
+        escapeCsvCell(eventName),
+        escapeCsvCell(lead.formId ?? ''),
+        escapeCsvCell(formName),
+        escapeCsvCell(lead.id),
+        escapeCsvCell(lead.createdAt.toISOString()),
+        escapeCsvCell(lead.email ?? ''),
+        escapeCsvCell(lead.firstName ?? ''),
+        escapeCsvCell(lead.lastName ?? ''),
+        escapeCsvCell(lead.phone ?? ''),
+        escapeCsvCell(lead.company ?? ''),
+        escapeCsvCell(lead.notes ?? ''),
+      ];
+
+      rows.push(rowCells.join(CSV_DELIMITER));
+    }
+
+    const csv = rows.join('\r\n');
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-    const filenameParts = [`form-${formId}-leads`];
+    const filenameParts = ['leads'];
+    if (eventIdFilter) filenameParts.push(`event_${eventIdFilter}`);
     if (fromParam) filenameParts.push(`from_${fromParam}`);
     if (toParam) filenameParts.push(`to_${toParam}`);
     filenameParts.push(timestamp);
@@ -234,11 +226,9 @@ export async function GET(
       },
     });
   } catch (err) {
-    console.error('Error while exporting form leads CSV', err);
+    console.error('Error while exporting global leads CSV', err);
     return new Response(
-      JSON.stringify({
-        error: 'Interner Serverfehler beim CSV-Export (Formular)',
-      }),
+      JSON.stringify({ error: 'Interner Serverfehler beim CSV-Export' }),
       {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
