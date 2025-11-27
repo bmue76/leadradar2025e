@@ -1,7 +1,7 @@
 // web/app/(admin)/admin/forms/[id]/leads/page.tsx
 'use client';
 
-import React, { use, useEffect, useState } from 'react';
+import React, { use, useEffect, useMemo, useState } from 'react';
 
 type FormItem = {
   id: number;
@@ -27,6 +27,12 @@ type PageProps = {
   params: Promise<{ id: string }>;
 };
 
+type LeadStatsPerDay = {
+  key: string;   // YYYY-MM-DD
+  label: string; // DD.MM.YYYY
+  count: number;
+};
+
 export default function FormLeadsPage({ params }: PageProps) {
   const resolvedParams = use(params);
   const formId = Number.parseInt(resolvedParams.id, 10);
@@ -36,6 +42,7 @@ export default function FormLeadsPage({ params }: PageProps) {
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showStats, setShowStats] = useState(false);
 
   useEffect(() => {
     if (!Number.isFinite(formId) || formId <= 0) {
@@ -93,6 +100,43 @@ export default function FormLeadsPage({ params }: PageProps) {
   }
 
   const eventId = form?.eventId;
+  const totalLeads = leads.length;
+
+  const handleExportCsv = () => {
+    if (!Number.isFinite(formId) || formId <= 0) return;
+    // Browser direkt auf die Export-API schicken → Download startet
+    window.location.href = `/api/admin/forms/${formId}/leads/export`;
+  };
+
+  // einfache Statistik: Leads pro Tag
+  const leadsPerDay: LeadStatsPerDay[] = useMemo(() => {
+    const map = new Map<string, LeadStatsPerDay>();
+
+    for (const lead of leads) {
+      const d = new Date(lead.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+
+      const key = `${yyyy}-${mm}-${dd}`;
+      const label = `${dd}.${mm}.${yyyy}`;
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(key, { key, label, count: 1 });
+      }
+    }
+
+    const arr = Array.from(map.values());
+    arr.sort((a, b) => a.key.localeCompare(b.key));
+    return arr;
+  }, [leads]);
+
+  const maxCount = leadsPerDay.reduce((max, item) => (item.count > max ? item.count : max), 0) || 1;
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '1.5rem' }}>
@@ -168,6 +212,132 @@ export default function FormLeadsPage({ params }: PageProps) {
         >
           Für dieses Formular wurden noch keine Leads erfasst.
         </div>
+      )}
+
+      {/* Toolbar: Zusammenfassung + Buttons */}
+      {!isLoading && !loadError && totalLeads > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '0.75rem',
+            fontSize: '0.9rem',
+          }}
+        >
+          <div>
+            <strong>{totalLeads}</strong> Leads erfasst
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              type="button"
+              onClick={() => setShowStats((prev) => !prev)}
+              style={{
+                backgroundColor: '#eeeeee',
+                color: '#333',
+                border: '1px solid #ccc',
+                borderRadius: 4,
+                padding: '0.35rem 0.8rem',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              {showStats ? 'Statistik verbergen' : 'Statistik anzeigen'}
+            </button>
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              style={{
+                backgroundColor: '#1976d2',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 4,
+                padding: '0.4rem 0.9rem',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              CSV exportieren
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* einfache Statistik */}
+      {!isLoading && !loadError && totalLeads > 0 && showStats && (
+        <section
+          style={{
+            marginBottom: '1rem',
+            padding: '0.75rem 1rem',
+            borderRadius: 6,
+            border: '1px solid #e0e0e0',
+            background: '#fafafa',
+          }}
+        >
+          <h2
+            style={{
+              fontSize: '1rem',
+              fontWeight: 600,
+              marginBottom: '0.5rem',
+            }}
+          >
+            Statistik
+          </h2>
+          <p style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: '#555' }}>
+            Insgesamt <strong>{totalLeads}</strong> Leads.
+          </p>
+
+          {leadsPerDay.length === 0 ? (
+            <p style={{ fontSize: '0.85rem', color: '#777' }}>
+              Keine auswertbaren Datumsangaben vorhanden.
+            </p>
+          ) : (
+            <div>
+              <p style={{ fontSize: '0.85rem', color: '#555', marginBottom: '0.35rem' }}>
+                Leads pro Tag:
+              </p>
+              <div>
+                {leadsPerDay.map((item) => {
+                  const widthPercent = (item.count / maxCount) * 100;
+                  return (
+                    <div
+                      key={item.key}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        marginBottom: '0.25rem',
+                        fontSize: '0.8rem',
+                      }}
+                    >
+                      <div style={{ width: 90, color: '#555' }}>{item.label}</div>
+                      <div
+                        style={{
+                          flex: 1,
+                          background: '#e3f2fd',
+                          borderRadius: 4,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${widthPercent}%`,
+                            minWidth: item.count > 0 ? '10%' : 0,
+                            padding: '0.15rem 0.5rem',
+                            background: '#1976d2',
+                            color: '#fff',
+                            textAlign: 'right',
+                          }}
+                        >
+                          {item.count}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
       {leads.length > 0 && (
