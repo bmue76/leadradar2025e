@@ -3,6 +3,11 @@
 
 import { useEffect, useState, FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { FormRuntime } from '@/app/components/forms/FormRuntime';
+import type {
+  FormFieldRuntime,
+  SelectOption,
+} from '@/app/components/forms/FormRuntime';
 
 // Feldtypen – muss zu deinem Prisma-Enum FieldType passen
 const FIELD_TYPES = [
@@ -62,6 +67,45 @@ function normalizeFieldType(value: string | null | undefined): FieldType {
   return 'TEXT';
 }
 
+/**
+ * Hilfsfunktion: mappt ein API-FormField in ein Runtime-FormField
+ * für die Formular-Vorschau.
+ */
+function mapFormFieldToRuntimeField(field: FormField): FormFieldRuntime {
+  let options: SelectOption[] | null = null;
+
+  if (field.options) {
+    if (Array.isArray(field.options)) {
+      options = field.options as SelectOption[];
+    } else if (typeof field.options === 'string') {
+      try {
+        const parsed = JSON.parse(field.options);
+        if (Array.isArray(parsed)) {
+          options = parsed as SelectOption[];
+        }
+      } catch {
+        // ignorieren, wenn JSON nicht parsbar
+      }
+    }
+  }
+
+  return {
+    id: field.id,
+    key: field.key,
+    label: field.label,
+    type: normalizeFieldType(
+      typeof field.type === 'string' ? field.type : String(field.type),
+    ),
+    isRequired: field.isRequired,
+    isReadOnly: field.isReadOnly,
+    placeholder: field.placeholder,
+    helpText: field.helpText,
+    defaultValue: field.defaultValue,
+    options: options,
+    order: field.order,
+  };
+}
+
 export default function FormFieldsPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -79,7 +123,11 @@ export default function FormFieldsPage() {
 
   // Felder laden
   useEffect(() => {
-    if (!formId) return;
+    if (!formId) {
+      setLoading(false);
+      setError('Keine Formular-ID in der URL gefunden.');
+      return;
+    }
 
     const load = async () => {
       try {
@@ -93,9 +141,20 @@ export default function FormFieldsPage() {
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.error || `Fehler beim Laden (${res.status})`,
+          const message: string =
+            data.error || `Fehler beim Laden (${res.status})`;
+
+          console.error(
+            '[FormFieldsPage] Fehler beim Laden der Felder:',
+            message,
+            'Status:',
+            res.status,
+            'FormId:',
+            formId,
           );
+
+          setError(message);
+          return;
         }
 
         const data = await res.json();
@@ -182,9 +241,9 @@ export default function FormFieldsPage() {
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.error || `Fehler beim Anlegen (${res.status})`,
-          );
+          const message: string =
+            data.error || `Fehler beim Anlegen (${res.status})`;
+          throw new Error(message);
         }
 
         const created: FormField = await res.json();
@@ -209,9 +268,9 @@ export default function FormFieldsPage() {
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.error || `Fehler beim Aktualisieren (${res.status})`,
-          );
+          const message: string =
+            data.error || `Fehler beim Aktualisieren (${res.status})`;
+          throw new Error(message);
         }
 
         const updated: FormField = await res.json();
@@ -266,9 +325,9 @@ export default function FormFieldsPage() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.error || `Fehler beim Löschen (${res.status})`,
-        );
+        const message: string =
+          data.error || `Fehler beim Löschen (${res.status})`;
+        throw new Error(message);
       }
 
       setFields((prev) => prev.filter((f) => f.id !== fieldId));
@@ -295,6 +354,19 @@ export default function FormFieldsPage() {
   }
 
   const isEditing = editingFieldId != null;
+
+  // Runtime-Felder für die Vorschau (nur einfache Projektion)
+  const runtimeFields: FormFieldRuntime[] = fields.map(
+    mapFormFieldToRuntimeField,
+  );
+
+  // Hilfsfunktion, um die Fehlermeldung etwas freundlicher zu machen
+  const renderErrorMessage = (msg: string) => {
+    if (msg === 'Invalid form id') {
+      return 'Ungültige Formular-ID. Vermutlich wird ein Formular aufgerufen, das nicht (mehr) existiert oder der Link ist falsch (z.B. Event-ID statt Formular-ID).';
+    }
+    return msg;
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -326,7 +398,7 @@ export default function FormFieldsPage() {
 
         {error && (
           <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
+            {renderErrorMessage(error)}
           </div>
         )}
 
@@ -522,6 +594,42 @@ export default function FormFieldsPage() {
             </table>
           </div>
         )}
+      </section>
+
+      {/* Live-Vorschau des Formulars (Runtime-Rendering) */}
+      <section className="border rounded-lg bg-white shadow-sm p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Formular-Vorschau</h2>
+          <span className="text-xs text-gray-500">
+            Test-Submit loggt die Werte nur in der Konsole.
+          </span>
+        </div>
+
+        {runtimeFields.length === 0 ? (
+          <p className="text-sm text-gray-600">
+            Noch keine Felder vorhanden – keine Vorschau möglich.
+          </p>
+        ) : (
+          <div className="max-w-xl border border-gray-200 rounded-md p-4 bg-gray-50">
+            <FormRuntime
+              fields={runtimeFields}
+              submitLabel="Test-Submit (nur Vorschau)"
+              onSubmit={(values) => {
+                console.log(
+                  '[Admin Form Preview] Form submit values:',
+                  values,
+                );
+                alert('Vorschau-Submit – Werte in der Konsole ansehen.');
+              }}
+            />
+          </div>
+        )}
+
+        <p className="text-xs text-gray-500">
+          Hinweis: Diese Vorschau ist rein für den Admin gedacht und speichert
+          noch keine Leads. Sie nutzt dieselbe Runtime-Logik, die später
+          auch für die Apps und die echte Lead-Erfassung verwendet wird.
+        </p>
       </section>
     </div>
   );
