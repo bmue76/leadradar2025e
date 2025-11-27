@@ -1,36 +1,38 @@
 // web/app/(admin)/admin/forms/[id]/preview/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import React, { use, useEffect, useState } from 'react';
 import { FormRuntime } from '@/app/components/forms/FormRuntime';
-import type {
-  FormFieldRuntime,
-  SelectOption,
-} from '@/app/components/forms/FormRuntime';
 
-// Feldtypen – muss zu deinem Prisma-Enum FieldType passen
-const FIELD_TYPES = [
-  'TEXT',
-  'TEXTAREA',
-  'SINGLE_SELECT',
-  'MULTI_SELECT',
-  'NUMBER',
-  'EMAIL',
-  'PHONE',
-  'DATE',
-  'DATETIME',
-  'BOOLEAN',
-] as const;
+type FormStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 
-type FieldType = (typeof FIELD_TYPES)[number];
+type FormItem = {
+  id: number;
+  eventId: number | null;
+  name: string;
+  description: string | null;
+  status: FormStatus;
+};
 
-type FormField = {
+// Feldtypen – analog zu FormRuntime
+type FieldType =
+  | 'TEXT'
+  | 'TEXTAREA'
+  | 'SINGLE_SELECT'
+  | 'MULTI_SELECT'
+  | 'NUMBER'
+  | 'EMAIL'
+  | 'PHONE'
+  | 'DATE'
+  | 'DATETIME'
+  | 'BOOLEAN';
+
+type FormFieldItem = {
   id: number;
   formId: number;
   key: string;
   label: string;
-  type: FieldType | string;
+  type: FieldType;
   isRequired: boolean;
   isReadOnly: boolean;
   isOcrField: boolean;
@@ -38,229 +40,291 @@ type FormField = {
   placeholder: string | null;
   helpText: string | null;
   defaultValue: string | null;
-  options?: unknown;
-  config?: unknown;
-  createdAt: string;
-  updatedAt: string;
+  options: string[] | null; // DB-seitig aktuell string[]
+  config: any | null;
 };
 
-function normalizeFieldType(value: string | null | undefined): FieldType {
-  if (value && FIELD_TYPES.includes(value as FieldType)) {
-    return value as FieldType;
-  }
-  return 'TEXT';
-}
+type PageProps = {
+  // Next 15/16: params ist ein Promise
+  params: Promise<{ id: string }>;
+};
 
-/**
- * Hilfsfunktion: mappt ein API-FormField in ein Runtime-FormField
- * für die Formular-Vorschau.
- */
-function mapFormFieldToRuntimeField(field: FormField): FormFieldRuntime {
-  let options: SelectOption[] | null = null;
+export default function FormPreviewPage({ params }: PageProps) {
+  const resolvedParams = use(params);
+  const formId = Number.parseInt(resolvedParams.id, 10);
 
-  if (field.options) {
-    if (Array.isArray(field.options)) {
-      options = field.options as SelectOption[];
-    } else if (typeof field.options === 'string') {
-      try {
-        const parsed = JSON.parse(field.options);
-        if (Array.isArray(parsed)) {
-          options = parsed as SelectOption[];
-        }
-      } catch {
-        // ignorieren, wenn JSON nicht parsbar
-      }
-    }
-  }
+  const [form, setForm] = useState<FormItem | null>(null);
+  const [fields, setFields] = useState<FormFieldItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  return {
-    id: field.id,
-    key: field.key,
-    label: field.label,
-    type: normalizeFieldType(
-      typeof field.type === 'string' ? field.type : String(field.type),
-    ),
-    isRequired: field.isRequired,
-    isReadOnly: field.isReadOnly,
-    placeholder: field.placeholder,
-    helpText: field.helpText,
-    defaultValue: field.defaultValue,
-    options: options,
-    order: field.order,
-  };
-}
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-export default function FormPreviewPage() {
-  const params = useParams<{ id: string }>();
-  const router = useRouter();
-
-  const formId = Array.isArray(params?.id) ? params.id[0] : params?.id;
-
-  const [fields, setFields] = useState<FormField[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Felder laden
+  // Formular + Felder laden
   useEffect(() => {
-    if (!formId) {
-      setLoading(false);
-      setError('Keine Formular-ID in der URL gefunden.');
+    if (!Number.isFinite(formId) || formId <= 0) {
+      setLoadError('Ungültige Formular-ID');
       return;
     }
 
-    const load = async () => {
+    let cancelled = false;
+
+    async function load() {
       try {
-        setLoading(true);
-        setError(null);
+        setIsLoading(true);
+        setLoadError(null);
 
-        const res = await fetch(`/api/admin/forms/${formId}/fields`, {
-          method: 'GET',
-          cache: 'no-store',
-        });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          const message: string =
-            data.error || `Fehler beim Laden (${res.status})`;
-
-          console.error(
-            '[FormPreviewPage] Fehler beim Laden der Felder:',
-            message,
-            'Status:',
-            res.status,
-            'FormId:',
-            formId,
-          );
-
-          setError(message);
-          return;
+        // Formular laden
+        const formRes = await fetch(`/api/admin/forms/${formId}`);
+        if (!formRes.ok) {
+          throw new Error(`Formular konnte nicht geladen werden (Status ${formRes.status})`);
+        }
+        const formData = await formRes.json();
+        if (!cancelled) {
+          setForm(formData as FormItem);
         }
 
-        const data = await res.json();
-        const list: FormField[] = Array.isArray(data)
-          ? data
-          : Array.isArray(data.fields)
-          ? data.fields
-          : [];
-
-        list.sort((a, b) => a.order - b.order || a.id - b.id);
-
-        setFields(list);
+        // Felder laden
+        const fieldsRes = await fetch(`/api/admin/forms/${formId}/fields`);
+        if (!fieldsRes.ok) {
+          throw new Error(`Felder konnten nicht geladen werden (Status ${fieldsRes.status})`);
+        }
+        const fieldsData = await fieldsRes.json();
+        if (!cancelled) {
+          const list: FormFieldItem[] = Array.isArray(fieldsData)
+            ? fieldsData
+            : Array.isArray((fieldsData as any).fields)
+            ? (fieldsData as any).fields
+            : [];
+          setFields(list);
+        }
       } catch (err: any) {
-        console.error('Error loading fields', err);
-        setError(err.message || 'Felder konnten nicht geladen werden');
+        console.error('Error loading form/fields', err);
+        if (!cancelled) {
+          setLoadError(err?.message ?? 'Unbekannter Fehler beim Laden');
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
-    };
+    }
 
     load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [formId]);
 
-  if (!formId) {
-    return (
-      <div className="p-6">
-        <h1 className="text-xl font-semibold mb-4">Formular-Vorschau</h1>
-        <p className="text-red-600">
-          Keine gültige Formular-ID in der URL gefunden.
-        </p>
-      </div>
-    );
+  async function handleSubmit(values: Record<string, unknown>) {
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    setFieldErrors({});
+
+    if (!Number.isFinite(formId) || formId <= 0) {
+      setSubmitError('Ungültige Formular-ID');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+
+      const res = await fetch(`/api/forms/${formId}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        // Feld-Validierungsfehler vom Server
+        if (res.status === 400 && data && typeof data === 'object') {
+          if (
+            (data as any).error === 'Validation failed' &&
+            (data as any).details &&
+            typeof (data as any).details === 'object'
+          ) {
+            setFieldErrors((data as any).details as Record<string, string>);
+            setSubmitError('Validierung fehlgeschlagen. Bitte Eingaben prüfen.');
+            return;
+          }
+
+          if (typeof (data as any).error === 'string') {
+            setSubmitError((data as any).error);
+            return;
+          }
+        }
+
+        const msg =
+          (data && typeof data === 'object' && typeof (data as any).error === 'string'
+            ? (data as any).error
+            : null) ?? `Lead konnte nicht gespeichert werden (Status ${res.status})`;
+        setSubmitError(msg);
+        return;
+      }
+
+      // Erfolg
+      const leadId = (data as any)?.leadId;
+      setSubmitSuccess(
+        leadId ? `Lead gespeichert (Test) – ID: ${leadId}` : 'Lead gespeichert (Test).'
+      );
+      console.log('Lead API response', data);
+    } catch (err: any) {
+      console.error('Error submitting lead preview', err);
+      setSubmitError(err?.message ?? 'Unbekannter Fehler beim Speichern');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
-  const runtimeFields: FormFieldRuntime[] = fields.map(
-    mapFormFieldToRuntimeField,
-  );
-
-  const renderErrorMessage = (msg: string) => {
-    if (msg === 'Invalid form id') {
-      return 'Ungültige Formular-ID. Vermutlich wird ein Formular aufgerufen, das nicht (mehr) existiert oder der Link ist falsch (z.B. Event-ID statt Formular-ID).';
-    }
-    return msg;
-  };
-
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between gap-4">
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: '1.5rem' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
         <div>
-          <h1 className="text-2xl font-semibold">Formular-Vorschau</h1>
-          <p className="text-sm text-gray-600">
+          <h1 style={{ fontSize: '1.8rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+            Formular-Vorschau
+          </h1>
+          <p style={{ color: '#555' }}>
             Formular-ID:{' '}
-            <code className="px-1 py-0.5 bg-gray-100 rounded">
-              {formId}
-            </code>
-          </p>
-          <p className="text-xs text-gray-500 mt-1">
-            Diese Vorschau rendert das Formular basierend auf den aktuell
-            definierten Feldern. Eingaben werden noch nicht als Leads
-            gespeichert.
+            {Number.isFinite(formId) && formId > 0 ? (
+              <strong>{formId}</strong>
+            ) : (
+              <span style={{ color: '#d32f2f' }}>Ungültig</span>
+            )}
+            {form && (
+              <>
+                {' · '}
+                <strong>{form.name}</strong>
+              </>
+            )}
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => router.push(`/admin/forms/${formId}/fields`)}
-            className="inline-flex items-center rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50"
-          >
-            ← Zur Feldverwaltung
-          </button>
-          <button
-            type="button"
-            onClick={() => router.back()}
-            className="inline-flex items-center rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50"
-          >
-            Zurück
-          </button>
-        </div>
-      </div>
+        <nav style={{ alignSelf: 'center', fontSize: '0.9rem' }}>
+          <a href={`/admin/forms/${formId}/fields`} style={{ marginRight: '1rem', color: '#1976d2' }}>
+            ← Zurück zu Feldern
+          </a>
+          <a href="/admin" style={{ color: '#1976d2' }}>
+            Admin-Übersicht
+          </a>
+        </nav>
+      </header>
 
-      {error && (
-        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {renderErrorMessage(error)}
+      {isLoading && <p>Lade Formular und Felder …</p>}
+
+      {loadError && (
+        <div
+          style={{
+            background: '#ffebee',
+            border: '1px solid #ffcdd2',
+            color: '#c62828',
+            padding: '0.75rem 1rem',
+            borderRadius: 6,
+            marginBottom: '1rem',
+          }}
+        >
+          {loadError}
         </div>
       )}
 
-      {loading ? (
-        <div className="border rounded-lg bg-white shadow-sm px-4 py-6 text-sm text-gray-600">
-          Formular-Felder werden geladen...
+      {!isLoading && !loadError && fields.length === 0 && (
+        <div
+          style={{
+            background: '#fff3e0',
+            border: '1px solid #ffe0b2',
+            color: '#e65100',
+            padding: '0.75rem 1rem',
+            borderRadius: 6,
+            marginBottom: '1rem',
+          }}
+        >
+          Für dieses Formular sind noch keine Felder definiert.
         </div>
-      ) : fields.length === 0 ? (
-        <div className="border rounded-lg bg-white shadow-sm px-4 py-6 text-sm text-gray-600">
-          Für dieses Formular sind noch keine Felder definiert. Lege zuerst
-          Felder in der Feldverwaltung an, um eine Vorschau zu sehen.
+      )}
+
+      {submitError && (
+        <div
+          style={{
+            background: '#ffebee',
+            border: '1px solid #ffcdd2',
+            color: '#c62828',
+            padding: '0.7rem 1rem',
+            borderRadius: 6,
+            marginBottom: '0.75rem',
+          }}
+        >
+          {submitError}
         </div>
-      ) : (
-        <section className="border rounded-lg bg-white shadow-sm p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Live-Vorschau</h2>
-            <span className="text-xs text-gray-500">
-              Test-Submit loggt die Werte nur in der Konsole.
-            </span>
-          </div>
+      )}
 
-          <div className="max-w-xl border border-gray-200 rounded-md p-4 bg-gray-50">
-            <FormRuntime
-              fields={runtimeFields}
-              submitLabel="Test-Submit (nur Vorschau)"
-              onSubmit={(values) => {
-                console.log(
-                  '[Admin Form Preview Page] Form submit values:',
-                  values,
-                );
-                alert(
-                  'Vorschau-Submit ausgeführt. Die Werte findest du in der Browser-Konsole.',
-                );
-              }}
-            />
-          </div>
+      {submitSuccess && (
+        <div
+          style={{
+            background: '#e8f5e9',
+            border: '1px solid #c8e6c9',
+            color: '#2e7d32',
+            padding: '0.7rem 1rem',
+            borderRadius: 6,
+            marginBottom: '0.75rem',
+          }}
+        >
+          {submitSuccess}
+        </div>
+      )}
 
-          <p className="text-xs text-gray-500">
-            Hinweis: Diese Runtime-Vorschau bildet die Basis für die spätere
-            Lead-Erfassung (Web & Mobile). In einem späteren Teilprojekt
-            werden wir hier die eigentliche Lead-Speicherung und API-Anbindung
-            ergänzen.
+      {Object.keys(fieldErrors).length > 0 && (
+        <div
+          style={{
+            background: '#fff3e0',
+            border: '1px solid #ffe0b2',
+            color: '#e65100',
+            padding: '0.7rem 1rem',
+            borderRadius: 6,
+            marginBottom: '0.75rem',
+            fontSize: '0.9rem',
+          }}
+        >
+          <strong>Feldfehler (Server):</strong>
+          <ul style={{ marginTop: '0.4rem', paddingLeft: '1.2rem' }}>
+            {Object.entries(fieldErrors).map(([key, msg]) => (
+              <li key={key}>
+                <code>{key}</code>: {msg}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {fields.length > 0 && (
+        <section
+          style={{
+            borderRadius: 12,
+            border: '1px solid #ddd',
+            padding: '1.25rem 1.5rem',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.03)',
+          }}
+        >
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.75rem' }}>
+            Live-Formular (Test-Submit)
+          </h2>
+
+          <p style={{ fontSize: '0.9rem', color: '#555', marginBottom: '0.75rem' }}>
+            Diese Vorschau verwendet die gleiche Runtime wie später in der App. Beim Absenden wird
+            ein Lead über die Lead-API gespeichert.
           </p>
+
+          {/* Cast, damit TS mit dem options-Typ zufrieden ist */}
+          <FormRuntime
+            fields={fields as any}
+            onSubmit={handleSubmit}
+          />
         </section>
       )}
     </div>

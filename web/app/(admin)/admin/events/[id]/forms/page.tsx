@@ -191,7 +191,8 @@ export default function EventFormsPage({ params }: PageProps) {
         const data = await res.json().catch(() => null);
 
         if (!res.ok) {
-          const msg = data?.error ?? `Formular konnte nicht aktualisiert werden (Status ${res.status})`;
+          const msg =
+            data?.error ?? `Formular konnte nicht aktualisiert werden (Status ${res.status})`;
           setSubmitError(msg);
           return;
         }
@@ -471,7 +472,13 @@ export default function EventFormsPage({ params }: PageProps) {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '0.4rem' }}>
                   Beschreibung
                 </th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '0.4rem' }}>
+                <th
+                  style={{
+                    textAlign: 'right',
+                    borderBottom: '1px solid #ddd',
+                    padding: '0.4rem',
+                  }}
+                >
                   Aktionen
                 </th>
               </tr>
@@ -518,7 +525,7 @@ export default function EventFormsPage({ params }: PageProps) {
                       }}
                     >
                       <a
-                        href={`/admin/events/${eventId}/forms/${form.id}/fields`}
+                        href={`/admin/forms/${form.id}/fields`}
                         style={{
                           marginRight: '0.5rem',
                           fontSize: '0.8rem',
@@ -526,6 +533,26 @@ export default function EventFormsPage({ params }: PageProps) {
                         }}
                       >
                         Felder bearbeiten
+                      </a>
+                      <a
+                        href={`/admin/forms/${form.id}/preview`}
+                        style={{
+                          marginRight: '0.5rem',
+                          fontSize: '0.8rem',
+                          color: '#1976d2',
+                        }}
+                      >
+                        Vorschau
+                      </a>
+                      <a
+                        href={`/admin/forms/${form.id}/leads`}
+                        style={{
+                          marginRight: '0.5rem',
+                          fontSize: '0.8rem',
+                          color: '#1976d2',
+                        }}
+                      >
+                        Leads anzeigen
                       </a>
                       <button
                         type="button"

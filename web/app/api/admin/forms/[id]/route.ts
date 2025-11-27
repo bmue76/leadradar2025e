@@ -1,111 +1,153 @@
-// app/api/admin/forms/[id]/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+// web/app/api/admin/forms/[id]/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 
-const FORM_STATUSES = ["DRAFT", "ACTIVE", "ARCHIVED"] as const;
-type FormStatus = (typeof FORM_STATUSES)[number];
-
-function isValidFormStatus(value: unknown): value is FormStatus {
-  return typeof value === "string" && FORM_STATUSES.includes(value as FormStatus);
+function parseFormIdFromUrl(request: NextRequest): number | null {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/\/api\/admin\/forms\/(\d+)/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return id;
 }
 
-// TODO: Später mit echter Session-Auth ausbauen
-async function requireAdminUser() {
-  const user = await prisma.user.findFirst({
-    where: { role: "admin", isActive: true },
-  });
-  return user;
-}
-
-type RouteParams = {
-  params: { id: string };
-};
-
-// GET /api/admin/forms/[id]
-export async function GET(_req: NextRequest, { params }: RouteParams) {
-  const user = await requireAdminUser();
-  if (!user) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
-
-  const id = Number(params.id);
-  if (Number.isNaN(id)) {
-    return new NextResponse("Invalid id", { status: 400 });
-  }
-
-  const form = await prisma.form.findUnique({
-    where: { id },
-  });
-
-  if (!form) {
-    return new NextResponse("Form not found", { status: 404 });
-  }
-
-  return NextResponse.json({ form });
-}
-
-// PATCH /api/admin/forms/[id]
-export async function PATCH(req: NextRequest, { params }: RouteParams) {
-  const user = await requireAdminUser();
-  if (!user) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
-
-  const id = Number(params.id);
-  if (Number.isNaN(id)) {
-    return new NextResponse("Invalid id", { status: 400 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return new NextResponse("Invalid JSON body", { status: 400 });
-  }
-
-  const {
-    name,
-    description,
-    status,
-    isDefault,
-    definition,
-  } = body as {
-    name?: string;
-    description?: string | null;
-    status?: string;
-    isDefault?: boolean;
-    definition?: unknown;
-  };
-
-  const data: Record<string, unknown> = {};
-
-  if (typeof name === "string") data.name = name;
-  if (description !== undefined) data.description = description;
-
-  if (status !== undefined) {
-    if (!isValidFormStatus(status)) {
-      return new NextResponse("Invalid status", { status: 400 });
-    }
-    data.status = status;
-  }
-
-  if (typeof isDefault === "boolean") {
-    data.isDefault = isDefault;
-  }
-
-  if (definition !== undefined) {
-    data.definition = definition;
+// GET /api/admin/forms/:id
+export async function GET(request: NextRequest) {
+  const formId = parseFormIdFromUrl(request);
+  if (!formId) {
+    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
   }
 
   try {
-    const form = await prisma.form.update({
-      where: { id },
-      data,
+    const form = await prisma.form.findUnique({
+      where: { id: formId },
     });
 
-    return NextResponse.json({ form });
+    if (!form) {
+      return NextResponse.json({ error: 'Form not found' }, { status: 404 });
+    }
+
+    return NextResponse.json(form, { status: 200 });
   } catch (err) {
-    console.error("Error updating form", err);
-    return new NextResponse("Error updating form", { status: 500 });
+    console.error('Error in GET /api/admin/forms/[id]:', err);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PATCH /api/admin/forms/:id
+export async function PATCH(request: NextRequest) {
+  const formId = parseFormIdFromUrl(request);
+  if (!formId) {
+    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
+  }
+
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { name, description, status, isDefault } = body ?? {};
+
+  if (typeof name !== 'string' || !name.trim()) {
+    return NextResponse.json(
+      { error: 'Name is required and must be a non-empty string' },
+      { status: 400 },
+    );
+  }
+
+  if (status && !['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(status)) {
+    return NextResponse.json(
+      { error: 'Invalid status value' },
+      { status: 400 },
+    );
+  }
+
+  if (isDefault != null && typeof isDefault !== 'boolean') {
+    return NextResponse.json(
+      { error: 'isDefault must be a boolean if provided' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    // Erst Formular holen, um eventId zu kennen
+    const existing = await prisma.form.findUnique({
+      where: { id: formId },
+    });
+
+    if (!existing) {
+      return NextResponse.json({ error: 'Form not found' }, { status: 404 });
+    }
+
+    const dataToUpdate: any = {
+      name: name.trim(),
+      description: description ?? null,
+      status: status ?? existing.status,
+      isDefault: isDefault ?? existing.isDefault,
+    };
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // Falls dieses Formular als Standard markiert wird:
+      if (isDefault === true && existing.eventId != null) {
+        // alle anderen Formulare des Events auf false
+        await tx.form.updateMany({
+          where: {
+            eventId: existing.eventId,
+            NOT: { id: formId },
+          },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.form.update({
+        where: { id: formId },
+        data: dataToUpdate,
+      });
+    });
+
+    return NextResponse.json(updated, { status: 200 });
+  } catch (err) {
+    console.error('Error in PATCH /api/admin/forms/[id]:', err);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/admin/forms/:id
+export async function DELETE(request: NextRequest) {
+  const formId = parseFormIdFromUrl(request);
+  if (!formId) {
+    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
+  }
+
+  try {
+    // Optional: hier könnte man prüfen, ob noch Leads existieren und ggf. ein 409 zurückgeben.
+    await prisma.form.delete({
+      where: { id: formId },
+    });
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (err: any) {
+    console.error('Error in DELETE /api/admin/forms/[id]:', err);
+
+    // Wenn Prisma z.B. wegen FK-Constraint scheitert, geben wir 409 aus
+    if (err?.code === 'P2003') {
+      return NextResponse.json(
+        { error: 'Form cannot be deleted because related records exist' },
+        { status: 409 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
   }
 }
