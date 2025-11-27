@@ -59,3 +59,8 @@ leadradar2025e besteht aus mehreren Schichten:
     "data": { ... }
   }
 
+- **neue Models Event, Lead**
+
+Migration add_event_and_lead
+
+Endpoint /api/admin/events.

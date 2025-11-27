@@ -9,6 +9,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Formular-Status (für Admin & App)
+enum FormStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+// Feld-Typen für Form-Felder
+enum FieldType {
+  TEXT           // Einzeilige Texteingabe
+  TEXTAREA       // Mehrzeilige Texteingabe
+  SINGLE_SELECT  // Eine Auswahl (Dropdown/Radio)
+  MULTI_SELECT   // Mehrere Auswahlen (Checkbox-Gruppe)
+  NUMBER         // Numerische Eingabe
+  EMAIL          // E-Mail mit spezieller Validierung
+  PHONE          // Telefonnummer
+  DATE           // Datum
+  DATETIME       // Datum + Zeit
+  BOOLEAN        // Ja/Nein, Checkbox/Switch
+}
+
 model User {
   id        Int      @id @default(autoincrement())
   email     String   @unique
@@ -16,10 +37,14 @@ model User {
   role      String   @default("admin")
 
   // 🔐 Auth-Felder
-  passwordHash String?          // null = kein Login-Passwort gesetzt
+  passwordHash String?       // null = kein Login-Passwort gesetzt
   isActive     Boolean @default(true)
   lastLoginAt  DateTime?
-  
+
+  // Beziehungen
+  events       Event[] @relation("UserEvents")
+  formsCreated Form[]  @relation("FormsCreated")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -31,16 +56,61 @@ model Event {
   endDate     DateTime?
   location    String?          // Messeort / Halle / Stand etc.
   description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+
+  // Besitzer des Events (z.B. Kunden-Admin / Account-Owner)
+  ownerId Int?
+  owner   User?    @relation("UserEvents", fields: [ownerId], references: [id])
 
   // Beziehungen
+  leads   Lead[]
+  forms   Form[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Form {
+  id          Int         @id @default(autoincrement())
+
+  // Zu welchem Event gehört dieses Formular?
+  eventId     Int
+  event       Event       @relation(fields: [eventId], references: [id])
+
+  name        String
+  description String?
+
+  status      FormStatus  @default(DRAFT)
+  isDefault   Boolean     @default(false)
+
+  // Komplettes Formbuilder-JSON (Felder, Layout, Styling etc.)
+  definition  Json?
+
+  // Optionaler Bezug zum User, der das Formular angelegt hat
+  createdById Int?
+  createdBy   User?       @relation("FormsCreated", fields: [createdById], references: [id])
+
+  // Leads, die über dieses Formular erfasst wurden
   leads       Lead[]
+
+  // Form-Felder dieses Formulars
+  fields      FormField[]
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 }
 
 model Lead {
   id        Int      @id @default(autoincrement())
+
+  // Bisheriger Bezug zum Event (bleibt bestehen)
   eventId   Int
+  event     Event    @relation(fields: [eventId], references: [id])
+
+  // NEU: optionaler Bezug zum Formular
+  // (später können wir das verpflichtend machen, wenn alle Leads über Forms laufen)
+  formId    Int?
+  form      Form?    @relation(fields: [formId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -52,7 +122,72 @@ model Lead {
   company   String?
   notes     String?
 
-  // Beziehung zurück zum Event
-  event     Event    @relation(fields: [eventId], references: [id])
+  // Dynamische Feldwerte aus FormField-Definitionen
+  fieldValues LeadFieldValue[]
 }
 
+// Ein Feld innerhalb eines Formulars (z.B. Firma, Interesse, Bemerkungen)
+model FormField {
+  id          Int       @id @default(autoincrement())
+
+  // Zugehöriges Formular
+  form        Form      @relation(fields: [formId], references: [id])
+  formId      Int
+
+  // Technischer Schlüssel (muss pro Formular eindeutig sein)
+  key         String
+
+  // Label im UI
+  label       String
+
+  // Feldtyp
+  type        FieldType
+
+  // Flags / Verhalten
+  isRequired  Boolean   @default(false)
+  isReadOnly  Boolean   @default(false)
+  isOcrField  Boolean   @default(false) // z.B. Felder, die per OCR vorbelegt werden
+
+  // Anzeige-Reihenfolge im Formular
+  order       Int       @default(0)
+
+  // Optionales UI-/Validierungs-Setup
+  placeholder  String?
+  helpText     String?
+  defaultValue String?
+
+  // für SINGLE_SELECT / MULTI_SELECT: Array von { value, label }
+  options     Json?
+
+  // generische Zusatzkonfiguration für später
+  config      Json?
+
+  // Werte, die Leads für dieses Feld gespeichert haben
+  leadValues  LeadFieldValue[]
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // pro Formular darf der key nur einmal vorkommen
+  @@unique([formId, key])
+}
+
+// Verknüpft einen Lead mit einem FormField und speichert den Wert
+model LeadFieldValue {
+  id        Int        @id @default(autoincrement())
+
+  lead      Lead       @relation(fields: [leadId], references: [id])
+  leadId    Int
+
+  field     FormField  @relation(fields: [fieldId], references: [id])
+  fieldId   Int
+
+  // Kanonische String-Repräsentation des Feldwertes.
+  // Bei MULTI_SELECT z.B. "A,B,C" – Parsing macht App/Admin-UI.
+  value     String
+
+  createdAt DateTime   @default(now())
+
+  // pro Lead/Feld nur ein Wert
+  @@unique([leadId, fieldId])
+}
