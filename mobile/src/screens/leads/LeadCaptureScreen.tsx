@@ -1,165 +1,281 @@
 // src/screens/leads/LeadCaptureScreen.tsx
-import React, { useEffect, useState } from 'react';
+
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  View,
+  Text,
+  StyleSheet,
   ActivityIndicator,
+  ScrollView,
   Alert,
   Button,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
 } from 'react-native';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { LeadStackParamList } from './LeadScreen';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import { LeadForm, LeadValue } from '../../types/forms';
+import {
+  fetchLeadForm,
+  submitLead,
+  CreateLeadPayload,
+} from '../../api/leads';
+import { LeadFieldRenderer } from '../../components/lead/LeadFieldRenderer';
 
-// --- Typen für Formular-Details ---
-
-type FieldType =
-  | 'TEXT'
-  | 'TEXTAREA'
-  | 'SINGLE_SELECT'
-  | 'MULTI_SELECT'
-  | 'NUMBER'
-  | 'EMAIL'
-  | 'PHONE'
-  | 'DATE'
-  | 'DATETIME'
-  | 'BOOLEAN';
-
-type FormField = {
-  id: number;
-  key: string;
-  label: string;
-  type: FieldType | string;
-  order: number;
-  options?: string[] | null;
+type LeadCaptureRouteParams = {
+  formId: number;
+  formName?: string;
 };
 
-type LeadForm = {
-  id: number;
-  name: string;
-  eventId: number | null;
-  eventName?: string | null;
-  fields: FormField[];
-};
+type ValueMap = Record<string, LeadValue>;
+type ErrorMap = Record<string, string | undefined>;
 
-type FormDetailResponse = {
-  form: LeadForm;
-};
+const LeadCaptureScreen: React.FC = () => {
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
 
-// --- Navigation-Props ---
-
-type Props = NativeStackScreenProps<LeadStackParamList, 'LeadCapture'>;
-
-// --- Component ---
-
-export default function LeadCaptureScreen({ route }: Props) {
-  const { formId, formName } = route.params;
+  const { formId, formName } = route.params as LeadCaptureRouteParams;
 
   const [form, setForm] = useState<LeadForm | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [values, setValues] = useState<ValueMap>({});
+  const [errors, setErrors] = useState<ErrorMap>({});
+  const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const API_BASE_URL =
-    process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:3000';
-
+  // Titel im Header setzen
   useEffect(() => {
+    navigation.setOptions({
+      title: formName || 'Lead erfassen',
+    });
+  }, [navigation, formName]);
+
+  // Formular laden
+  useEffect(() => {
+    let cancelled = false;
+
     const loadForm = async () => {
+      setLoading(true);
+      setLoadError(null);
+
       try {
-        setError(null);
-        const res = await fetch(`${API_BASE_URL}/api/admin/forms/${formId}`);
+        const loadedForm = await fetchLeadForm(formId);
+        if (cancelled) return;
 
-        if (!res.ok) {
-          throw new Error(
-            `Formular konnte nicht geladen werden (Status ${res.status})`,
-          );
-        }
-
-        const data: FormDetailResponse = await res.json();
-        setForm(data.form);
-      } catch (err) {
-        console.error('Fehler beim Laden des Formulars', err);
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unbekannter Fehler beim Laden des Formulars',
+        setForm(loadedForm);
+        setValues(initValuesFromForm(loadedForm));
+        setErrors({});
+      } catch (err: any) {
+        console.error('[LeadCapture] Fehler beim Laden des Formulars', err);
+        if (cancelled) return;
+        setLoadError(
+          err?.message || 'Formular konnte nicht geladen werden.',
         );
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
     loadForm();
-  }, [API_BASE_URL, formId]);
 
-  const handleSaveLead = () => {
-    // ⚠️ Platzhalter – hier wird später die echte Lead-Speicherlogik eingebaut.
-    // Geplante API-Struktur (Vorschlag):
-    //
-    // POST /api/admin/forms/:id/leads
-    // Body:
-    // {
-    //   "formId": number,
-    //   "values": [
-    //     { "fieldKey": "company", "value": "ACME AG" },
-    //     { "fieldKey": "email", "value": "john@acme.ch" },
-    //     ...
-    //   ]
-    // }
-    //
-    // Alternative: eigener Mobile-Endpoint /api/mobile/forms/:id/leads
-    //
-    Alert.alert(
-      'Lead speichern',
-      'Die API-Integration zum Speichern des Leads (z. B. POST /api/admin/forms/:id/leads) folgt in einem späteren Teilprojekt.',
-    );
+    return () => {
+      cancelled = true;
+    };
+  }, [formId]);
+
+  const initValuesFromForm = (f: LeadForm): ValueMap => {
+    const initial: ValueMap = {};
+
+    f.fields.forEach((field) => {
+      const type = String(field.type || 'TEXT').toUpperCase();
+      const key = field.key;
+
+      switch (type) {
+        case 'BOOLEAN':
+          initial[key] = false;
+          break;
+        case 'MULTI_SELECT':
+          initial[key] = [];
+          break;
+        default:
+          initial[key] = '';
+          break;
+      }
+    });
+
+    return initial;
+  };
+
+  const handleChangeFieldValue = useCallback(
+    (fieldKey: string, value: LeadValue) => {
+      setValues((prev) => ({
+        ...prev,
+        [fieldKey]: value,
+      }));
+      setErrors((prev) => ({
+        ...prev,
+        [fieldKey]: undefined,
+      }));
+    },
+    [],
+  );
+
+  const validateForm = (): boolean => {
+    if (!form) return false;
+
+    const newErrors: ErrorMap = {};
+
+    form.fields.forEach((field) => {
+      const key = field.key;
+      const rawValue = values[key];
+      const type = String(field.type || 'TEXT').toUpperCase();
+      const isRequired = !!field.required;
+
+      // Required-Check
+      if (isRequired) {
+        const isEmpty =
+          rawValue === undefined ||
+          rawValue === null ||
+          (typeof rawValue === 'string' &&
+            rawValue.trim().length === 0) ||
+          (Array.isArray(rawValue) && rawValue.length === 0);
+
+        if (isEmpty) {
+          newErrors[key] = 'Pflichtfeld, bitte ausfüllen.';
+          return;
+        }
+      }
+
+      // Email-Check
+      if (
+        type === 'EMAIL' &&
+        typeof rawValue === 'string' &&
+        rawValue.trim().length > 0
+      ) {
+        const emailRegex = /\S+@\S+\.\S+/;
+        if (!emailRegex.test(rawValue.trim())) {
+          newErrors[key] =
+            'Bitte eine gültige E-Mail-Adresse eingeben.';
+        }
+      }
+
+      // Number-Check
+      if (
+        type === 'NUMBER' &&
+        typeof rawValue === 'string' &&
+        rawValue.trim().length > 0
+      ) {
+        const asNumber = Number(rawValue.trim());
+        if (Number.isNaN(asNumber)) {
+          newErrors[key] = 'Bitte eine Zahl eingeben.';
+        }
+      }
+    });
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const buildPayload = (): CreateLeadPayload => {
+    if (!form) {
+      throw new Error('Kein Formular geladen.');
+    }
+
+    const valuesArray = form.fields.map((field) => {
+      const key = field.key;
+      let rawValue = values[key];
+
+      // Falls nichts gesetzt → null
+      if (rawValue === undefined) {
+        rawValue = null;
+      }
+
+      return {
+        fieldKey: key,
+        value: rawValue,
+      };
+    });
+
+    return { values: valuesArray };
+  };
+
+  const handleSubmit = async () => {
+    if (!form) return;
+
+    const isValid = validateForm();
+    if (!isValid) {
+      // Fehler werden pro Feld angezeigt; ein globaler Hinweis ist optional
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      const payload = buildPayload();
+      const response = await submitLead(form.id, payload);
+
+      if (!response.success) {
+        throw new Error(
+          response.message || 'Lead konnte nicht gespeichert werden.',
+        );
+      }
+
+      Alert.alert(
+        'Lead gespeichert',
+        'Der Lead wurde erfolgreich gespeichert.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              // Formular zurücksetzen für nächsten Lead
+              setValues(initValuesFromForm(form));
+              setErrors({});
+            },
+          },
+        ],
+      );
+    } catch (err: any) {
+      console.error('[LeadCapture] Fehler beim Speichern des Leads', err);
+      const msg =
+        err?.message || 'Lead konnte nicht gespeichert werden.';
+      setSubmitError(msg);
+      Alert.alert('Fehler', msg);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleRetry = () => {
+    // Einfach den Effekt neu triggern
+    setForm(null);
+    setValues({});
+    setErrors({});
+    setLoadError(null);
     setLoading(true);
-    setError(null);
 
-    const reload = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/admin/forms/${formId}`);
-
-        if (!res.ok) {
-          throw new Error(
-            `Formular konnte nicht geladen werden (Status ${res.status})`,
-          );
-        }
-
-        const data: FormDetailResponse = await res.json();
-        setForm(data.form);
-      } catch (err) {
-        console.error('Fehler beim Laden des Formulars', err);
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unbekannter Fehler beim Laden des Formulars',
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void reload();
+    // useEffect mit formId lädt dann neu
+    // (wir setzen loading=true, um sofort den Spinner zu zeigen)
   };
 
-  if (loading && !error) {
+  if (loading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />
-        <Text style={styles.infoText}>Formular wird geladen …</Text>
+        <Text style={styles.centeredText}>
+          Formular wird geladen...
+        </Text>
       </View>
     );
   }
 
-  if (error) {
+  if (loadError) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
-        <Button title="Erneut versuchen" onPress={handleRetry} />
+        <Text style={styles.errorText}>{loadError}</Text>
+        <View style={{ marginTop: 12 }}>
+          <Button title="Erneut versuchen" onPress={handleRetry} />
+        </View>
       </View>
     );
   }
@@ -168,116 +284,100 @@ export default function LeadCaptureScreen({ route }: Props) {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>
-          Formulardaten konnten nicht geladen werden.
+          Kein Formular verfügbar.
         </Text>
       </View>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
-      <View style={styles.header}>
-        <Text style={styles.formTitle}>{form.name || formName}</Text>
-        {form.eventName ? (
-          <Text style={styles.formMeta}>Event: {form.eventName}</Text>
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        {form.description ? (
+          <Text style={styles.description}>{form.description}</Text>
+        ) : null}
+
+        {form.fields && form.fields.length > 0 ? (
+          form.fields.map((field) => (
+            <LeadFieldRenderer
+              key={field.id ?? field.key}
+              field={field}
+              value={values[field.key]}
+              error={errors[field.key]}
+              onChange={(val) =>
+                handleChangeFieldValue(field.key, val)
+              }
+            />
+          ))
         ) : (
-          <Text style={styles.formMeta}>Kein Event zugeordnet</Text>
+          <Text>
+            Dieses Formular enthält noch keine Felder.
+          </Text>
         )}
-        <Text style={styles.formMeta}>
-          Felder: {form.fields?.length ?? 0}
-        </Text>
-      </View>
+      </ScrollView>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Formularfelder (Preview)</Text>
-        <Text style={styles.sectionHint}>
-          In einem späteren Teilprojekt werden diese Felder als interaktive
-          Eingabeelemente (Textfelder, Auswahl, Switches etc.) gerendert.
-        </Text>
-
-        {form.fields
-          .slice()
-          .sort((a, b) => a.order - b.order)
-          .map((field) => (
-            <View key={field.id} style={styles.fieldItem}>
-              <Text style={styles.fieldLabel}>{field.label}</Text>
-              <Text style={styles.fieldMeta}>
-                Typ: {field.type}{' '}
-                {field.options && field.options.length > 0
-                  ? `(${field.options.length} Optionen)`
-                  : ''}
-              </Text>
-            </View>
-          ))}
+      <View style={styles.footer}>
+        {submitError ? (
+          <Text style={styles.submitErrorText}>
+            {submitError}
+          </Text>
+        ) : null}
+        <Button
+          title={submitting ? 'Speichern...' : 'Lead speichern'}
+          onPress={handleSubmit}
+          disabled={submitting}
+        />
       </View>
-
-      <View style={styles.section}>
-        <Button title="Lead speichern (Placeholder)" onPress={handleSaveLead} />
-      </View>
-    </ScrollView>
+    </View>
   );
-}
+};
 
-// --- Styles ---
+export default LeadCaptureScreen;
 
 const styles = StyleSheet.create({
-  centered: {
+  container: {
     flex: 1,
-    padding: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#F4F4F4',
   },
-  infoText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: '#555',
-    textAlign: 'center',
-  },
-  errorText: {
-    marginBottom: 12,
-    fontSize: 14,
-    color: '#c00',
-    textAlign: 'center',
+  scroll: {
+    flex: 1,
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 24,
   },
-  header: {
+  description: {
     marginBottom: 16,
-  },
-  formTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  formMeta: {
-    fontSize: 13,
-    color: '#666',
-  },
-  section: {
-    marginTop: 16,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  sectionHint: {
-    fontSize: 13,
-    color: '#666',
-    marginBottom: 8,
-  },
-  fieldItem: {
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#ddd',
-  },
-  fieldLabel: {
     fontSize: 14,
-    fontWeight: '500',
+    color: '#444',
   },
-  fieldMeta: {
-    fontSize: 12,
-    color: '#666',
+  footer: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#ddd',
+    backgroundColor: '#fff',
+  },
+  submitErrorText: {
+    color: '#c00',
+    marginBottom: 8,
+    fontSize: 13,
+  },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  centeredText: {
+    marginTop: 8,
+    fontSize: 14,
+  },
+  errorText: {
+    color: '#c00',
+    textAlign: 'center',
   },
 });

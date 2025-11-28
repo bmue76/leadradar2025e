@@ -1,125 +1,232 @@
 // web/app/api/admin/forms/[id]/leads/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 
-function parseFormIdFromUrl(request: NextRequest): number | null {
-  const url = new URL(request.url);
-  const match = url.pathname.match(/\/api\/admin\/forms\/(\d+)\/leads/);
-  if (!match) return null;
-  const id = Number(match[1]);
-  if (!Number.isFinite(id) || id <= 0) return null;
-  return id;
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+// TODO: Später mit echter Session-Auth ausbauen
+async function requireAdminUser() {
+  // Wir prüfen nur, ob es überhaupt einen aktiven Admin gibt.
+  const user = await prisma.user.findFirst({
+    where: { role: "admin", isActive: true },
+  });
+  return user;
 }
 
-// GET /api/admin/forms/:id/leads
-export async function GET(request: NextRequest) {
-  const formId = parseFormIdFromUrl(request);
-  if (!formId) {
-    return NextResponse.json({ error: 'Invalid form id' }, { status: 400 });
+// Muss zu mobile/src/types/forms.ts passen
+type LeadValue = string | boolean | string[] | null;
+
+interface LeadFieldValuePayload {
+  fieldKey: string;
+  value: LeadValue;
+}
+
+interface CreateLeadPayload {
+  values: LeadFieldValuePayload[];
+}
+
+/**
+ * Hilfsfunktion: LeadValue -> kanonische String-Repräsentation.
+ * - MULTI_SELECT: "A,B,C"
+ * - BOOLEAN: "true" / "false"
+ * - null/undefined: ""
+ */
+function canonicalizeValue(raw: LeadValue): string {
+  if (raw === null || raw === undefined) return "";
+  if (Array.isArray(raw)) return raw.join(",");
+  if (typeof raw === "boolean") return raw ? "true" : "false";
+  return String(raw);
+}
+
+/**
+ * Hilfsfunktion: formId robust direkt aus der URL extrahieren.
+ * Beispielpfad: /api/admin/forms/1/leads
+ */
+function extractFormIdFromUrl(req: NextRequest): number | null {
+  try {
+    const url = new URL(req.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    // Erwartet: ["api", "admin", "forms", "1", "leads"]
+    const formsIndex = parts.indexOf("forms");
+    if (formsIndex === -1 || formsIndex + 1 >= parts.length) {
+      console.error("[LeadLeadsRoute] Konnte 'forms' nicht im Pfad finden:", parts);
+      return null;
+    }
+
+    const idStr = parts[formsIndex + 1];
+    const formId = Number(idStr);
+
+    if (!Number.isFinite(formId) || formId <= 0) {
+      console.error("[LeadLeadsRoute] Ungültige formId aus URL:", idStr);
+      return null;
+    }
+
+    return formId;
+  } catch (err) {
+    console.error("[LeadLeadsRoute] Fehler beim Parsen der URL:", err);
+    return null;
+  }
+}
+
+/**
+ * GET /api/admin/forms/:id/leads
+ * Liste der Leads zu einem Formular (optional für Admin-UI / Auswertungen).
+ */
+export async function GET(req: NextRequest) {
+  const user = await requireAdminUser();
+  if (!user) {
+    return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  try {
-    // Formular holen (für Name, eventId, etc.)
-    const form = await prisma.form.findUnique({
-      where: { id: formId },
-      select: {
-        id: true,
-        name: true,
-        eventId: true,
-      },
-    });
-
-    if (!form) {
-      return NextResponse.json({ error: 'Form not found' }, { status: 404 });
-    }
-
-    // Felder dieses Formulars
-    const fields = await prisma.formField.findMany({
-      where: { formId },
-      select: {
-        id: true,
-        key: true,
-        label: true,
-        order: true,
-      },
-      orderBy: {
-        order: 'asc',
-      },
-    });
-
-    // Leads für dieses Formular
-    const leads = await prisma.lead.findMany({
-      where: { formId },
-      select: {
-        id: true,
-        createdAt: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-
-    if (leads.length === 0) {
-      return NextResponse.json(
-        {
-          form,
-          fields,
-          leads: [],
-        },
-        { status: 200 },
-      );
-    }
-
-    const leadIds = leads.map((l) => l.id);
-
-    // Roh-Werte aus LeadFieldValue
-    const values = await prisma.leadFieldValue.findMany({
-      where: {
-        leadId: { in: leadIds },
-      },
-      select: {
-        id: true,
-        leadId: true,
-        fieldId: true,
-        value: true,
-      },
-    });
-
-    const fieldById = new Map(
-      fields.map((f) => [f.id, { id: f.id, key: f.key, label: f.label }]),
+  const formId = extractFormIdFromUrl(req);
+  if (!formId) {
+    return NextResponse.json(
+      { error: "Ungültige Formular-ID" },
+      { status: 400 },
     );
+  }
 
-    // Leads so aufbereiten, dass pro Lead ein values-Objekt nach fieldKey entsteht
-    const normalizedLeads = leads.map((lead) => {
-      const valuesForLead = values.filter((v) => v.leadId === lead.id);
-      const valueMap: Record<string, string> = {};
+  const leads = await prisma.lead.findMany({
+    where: { formId },
+    orderBy: { createdAt: "desc" },
+    include: {
+      fieldValues: {
+        include: {
+          field: true,
+        },
+      },
+      event: true,
+      form: true,
+    },
+  });
 
-      for (const v of valuesForLead) {
-        const field = fieldById.get(v.fieldId);
-        if (!field) continue;
-        valueMap[field.key] = v.value;
-      }
+  return NextResponse.json({ leads });
+}
 
-      return {
-        id: lead.id,
-        createdAt: lead.createdAt.toISOString(),
-        values: valueMap,
-      };
-    });
+/**
+ * POST /api/admin/forms/:id/leads
+ * Lead für ein Formular speichern (Mobile Lead Capture).
+ */
+export async function POST(req: NextRequest) {
+  const user = await requireAdminUser();
+  if (!user) {
+    return new NextResponse("Unauthorized", { status: 401 });
+  }
 
+  const formId = extractFormIdFromUrl(req);
+  if (!formId) {
+    return NextResponse.json(
+      { error: "Ungültige Formular-ID" },
+      { status: 400 },
+    );
+  }
+
+  // Formular inkl. Feldern & Event laden
+  const form = await prisma.form.findUnique({
+    where: { id: formId },
+    include: {
+      fields: true,
+    },
+  });
+
+  if (!form) {
+    return NextResponse.json(
+      { error: "Formular nicht gefunden." },
+      { status: 404 },
+    );
+  }
+
+  if (!form.eventId) {
+    // Für Mobile-Leads gehen wir davon aus, dass nur Event-Formulare verwendet werden
     return NextResponse.json(
       {
-        form,
-        fields,
-        leads: normalizedLeads,
+        error:
+          "Formular ist keinem Event zugeordnet. Event-Formulare sind für Mobile-Leads erforderlich.",
       },
-      { status: 200 },
-    );
-  } catch (err) {
-    console.error('Error in GET /api/admin/forms/[id]/leads:', err);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 },
+      { status: 400 },
     );
   }
+
+  let body: CreateLeadPayload;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Ungültiger JSON-Body" },
+      { status: 400 },
+    );
+  }
+
+  if (!body || !Array.isArray(body.values)) {
+    return NextResponse.json(
+      { error: "Payload muss ein 'values'-Array enthalten." },
+      { status: 400 },
+    );
+  }
+
+  // Payload in ein Lookup fieldKey -> LeadValue umwandeln
+  const valueMap: Record<string, LeadValue> = {};
+  for (const item of body.values) {
+    if (!item || typeof item.fieldKey !== "string") continue;
+    valueMap[item.fieldKey] =
+      item.value === undefined ? null : item.value;
+  }
+
+  // Helper für Basisfelder (Lead.firstName etc.)
+  const getStringOrNull = (key: string): string | null => {
+    const raw = valueMap[key];
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+    return null;
+  };
+
+  // Daten für Lead.create
+  const leadData = {
+    eventId: form.eventId,
+    formId: form.id,
+    firstName: getStringOrNull("firstName"),
+    lastName: getStringOrNull("lastName"),
+    email: getStringOrNull("email"),
+    phone: getStringOrNull("phone"),
+    company: getStringOrNull("company"),
+    notes: getStringOrNull("notes"),
+
+    // Dynamische Feldwerte: nested create in LeadFieldValue
+    fieldValues: {
+      create: form.fields
+        .map((field) => {
+          const raw = valueMap[field.key];
+          // Falls der Mobile-Client für ein Feld keinen Wert sendet, legen wir keinen LeadFieldValue an
+          if (raw === undefined) return null;
+          const value = canonicalizeValue(raw);
+          return {
+            value,
+            field: {
+              connect: { id: field.id },
+            },
+          };
+        })
+        .filter(
+          (
+            entry,
+          ): entry is {
+            value: string;
+            field: { connect: { id: number } };
+          } => !!entry,
+        ),
+    },
+  };
+
+  const lead = await prisma.lead.create({
+    data: leadData,
+  });
+
+  return NextResponse.json(
+    {
+      success: true,
+      leadId: lead.id,
+    },
+    { status: 201 },
+  );
 }
