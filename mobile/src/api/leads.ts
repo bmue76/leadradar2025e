@@ -1,72 +1,77 @@
 // src/api/leads.ts
 
 import { apiClient } from './apiClient';
-import { LeadForm, LeadValue } from '../types/forms';
+import { LeadWithFieldValuesDto } from '../types/leads';
 
-export interface LeadFieldValue {
-  fieldKey: string;
-  value: LeadValue;
+// Form-Definition für Runtime-Rendering in der App
+
+export type RuntimeFormField = {
+  id: number;
+  key: string;
+  label: string;
+  type: string;
+  options?: string[] | null;
+  required?: boolean;
+  order?: number;
+};
+
+export type RuntimeForm = {
+  id: number;
+  name: string;
+  eventId: number | null;
+  fields: RuntimeFormField[];
+};
+
+// Payload für das Anlegen eines Leads
+
+export type CreateLeadValuePayload = {
+  fieldId: number;
+  value: string;
+};
+
+export type CreateLeadPayload = {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+  values: CreateLeadValuePayload[];
+};
+
+// Formular für Lead-Erfassung laden
+// GET /api/admin/forms/:id
+
+export async function fetchLeadForm(formId: number): Promise<RuntimeForm> {
+  const data = (await apiClient.get(
+    `/api/admin/forms/${formId}`
+  )) as RuntimeForm;
+  return data;
 }
 
-export interface CreateLeadPayload {
-  values: LeadFieldValue[];
-}
+// Lead für ein Formular speichern
+// POST /api/admin/forms/:id/leads
 
-export interface CreateLeadResponse {
-  success: boolean;
-  leadId?: number;
-  message?: string;
-}
-
-/**
- * Formular inkl. Felder für die Lead-Erfassung laden.
- * Unterstützt sowohl Antworten der Form { form: LeadForm } als auch direkt LeadForm.
- */
-export async function fetchLeadForm(formId: number): Promise<LeadForm> {
-  const data: any = await apiClient.get<any>(`/api/admin/forms/${formId}`);
-
-  let form: LeadForm | undefined;
-
-  if (data && typeof data === 'object') {
-    if ('form' in data && data.form) {
-      form = data.form as LeadForm;
-    } else if ('id' in data && 'fields' in data) {
-      // Falls die API direkt das Formular-Objekt zurückgibt
-      form = data as LeadForm;
-    }
-  }
-
-  if (!form) {
-    throw new Error('Unerwartete API-Antwort beim Laden des Formulars.');
-  }
-
-  return form;
-}
-
-/**
- * Lead zum Formular speichern.
- */
 export async function submitLead(
   formId: number,
-  payload: CreateLeadPayload,
-): Promise<CreateLeadResponse> {
-  const data: any = await apiClient.post<any, CreateLeadPayload>(
-    `/api/admin/forms/${formId}/leads`,
-    payload,
-  );
+  payload: CreateLeadPayload
+): Promise<void> {
+  await apiClient.post(`/api/admin/forms/${formId}/leads`, payload);
+}
 
-  // Flexible Interpretation der Response
-  if (data && typeof data === 'object') {
-    if ('success' in data) {
-      return data as CreateLeadResponse;
-    }
-    if ('id' in data) {
-      return {
-        success: true,
-        leadId: data.id as number,
-      };
-    }
-  }
+// Leads zu einem Formular laden
+// GET /api/admin/forms/:id/leads
 
-  return { success: true };
+export type LeadsForFormResponse = {
+  leads: LeadWithFieldValuesDto[];
+};
+
+export async function fetchLeadsForForm(
+  formId: number
+): Promise<LeadWithFieldValuesDto[]> {
+  const data = (await apiClient.get(
+    `/api/admin/forms/${formId}/leads`
+  )) as Partial<LeadsForFormResponse>;
+
+  return data.leads ?? [];
 }
